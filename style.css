@@ -1,0 +1,56 @@
+/* Customização do Container Geral */
+body, .gradio-container {
+    background-color: #0d1117 !important;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+}
+
+/* Painéis (Boxes Laterais) */
+.cyber-box {
+    background-color: #161b22 !important;
+    border: 1px solid #30363d !important;
+    border-radius: 8px !important;
+    padding: 20px !important;
+}
+
+/* Botão Principal Estilo LinckedIn/Painel Moderno */
+.neon-btn {
+    background: #00ea64 !important;
+    color: #0d1117 !important;
+    font-weight: 700 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 12px !important;
+    cursor: pointer;
+    transition: background 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.neon-btn:hover {
+    background: #00c754 !important;
+    box-shadow: 0 0 12px rgba(0, 234, 100, 0.4) !important;
+}
+
+/* Console de Logs (Textarea) */
+.terminal-console textarea {
+    background-color: #090d13 !important;
+    color: #58a6ff !important; /* Azul estilo log do VS Code */
+    font-family: 'Fira Code', 'Courier New', monospace !important;
+    border: 1px solid #30363d !important;
+    border-radius: 6px !important;
+    padding: 15px !important;
+    font-size: 13px !important;
+    line-height: 1.6 !important;
+}
+
+/* Ajustes de Títulos e Textos */
+h3 {
+    color: #f0f6fc !important;
+    font-weight: 600 !important;
+    margin-bottom: 10px !important;
+}
+
+p, span {
+    color: #8b949e !important;
+    font-size: 14px !important;
+}
