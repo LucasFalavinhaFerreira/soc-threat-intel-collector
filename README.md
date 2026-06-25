@@ -35,3 +35,4 @@ python app.py
   * Otimização de memória através da estrutura de dados `set()`, garantindo a desduplicação automática e instantânea de dados redundantes entre os vendors.
   * **Métrica de Escabilidade:** Salto de ~600 IoCs para **+22.400 IPs únicos e consolidados** limpos prontos para exportação.
   * v3.0.0 (OSINT & UI Upgrade): Implementação do pipeline de enriquecimento via API do AbuseIPDB (Veredito tático) e segregação completa da camada de visualização em arquivo CSS dedicado, eliminando débitos técnicos e atingindo fidelidade visual de uma sala de monitoramento real.
+  * v4.0.0 (Sentinela & Automação): Introdução do motor de notificação ativa via Slack Webhooks, transformando o painel em uma ferramenta de resposta orientada a eventos.
