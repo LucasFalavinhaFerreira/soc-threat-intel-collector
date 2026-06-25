@@ -1,13 +1,75 @@
 import gradio as gr
 import requests
 import os
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 FEEDS_CTI = {
     "Proofpoint (Emerging Threats)": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt",
     "Blocklist.de (Ataques Recentes)": "https://lists.blocklist.de/lists/all.txt",
     "Tor Exit Nodes (Nós de Saída)": "https://check.torproject.org/exit-addresses"
 }
+
+DB_FILE = "threat_intel.db"
+
+def inicializar_banco():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS historico_ips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT,
+            data_registro TEXT,
+            score INTEGER,
+            pais TEXT,
+            isp TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def salvar_no_banco(ip, score, pais, isp):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO historico_ips (ip, data_registro, score, pais, isp)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (ip, data_atual, score, pais, isp))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+def obter_metricas_banco():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM historico_ips")
+        total_historico = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT pais, COUNT(*) as qtd 
+            FROM historico_ips 
+            GROUP BY pais 
+            ORDER BY qtd DESC 
+            LIMIT 5
+        ''')
+        top_paises = cursor.fetchall()
+        conn.close()
+        
+        if total_historico == 0:
+            return "Banco de dados ainda vazio. Execute a primeira análise."
+            
+        texto_metricas = f"Registos Totais no Banco: {total_historico}\n\n"
+        texto_metricas += "Top 5 Países Recorrentes:\n"
+        for p in top_paises:
+            texto_metricas += f"• {p[0]}: {p[1]} ocorrências\n"
+        return texto_metricas
+    except Exception as e:
+        return f"Erro ao ler métricas do banco: {str(e)}"
 
 def requisitar_feed(nome_feed, url):
     try:
@@ -32,38 +94,38 @@ def enriquecer_ip(ip):
         resposta = requests.get(url, headers=headers, params=querystring, timeout=5)
         if resposta.status_code == 200:
             dados = resposta.json()['data']
-            return {
+            res = {
                 "ip": ip,
                 "score": dados.get('abuseConfidenceScore', 0),
                 "pais": dados.get('countryCode', 'UN'),
                 "isp": dados.get('isp', 'Desconhecido')
             }
+            salvar_no_banco(res['ip'], res['score'], res['pais'], res['isp'])
+            return res
     except Exception:
         pass
     return {"ip": ip, "erro": "Falha na consulta OSINT"}
 
 def disparar_alerta_slack(logs_consolidacao, total_ips, alvos_criticos):
-    """Envia o relatório de ameaças estruturado para o Slack."""
     webhook_url = os.getenv("SLACK_WEBHOOK_URL")
     if not webhook_url:
-        return "⚠️ Alerta do Slack não configurado: URL do Webhook ausente."
+        return "Alerta do Slack não configurado: URL do Webhook ausente."
 
-    # Formatação de texto rica padrão do Slack (Markdown simplificado)
     texto_mensagem = (
-        "🟢 *SENTINELA SOC - THREAT INTEL v4.0*\n"
-        "_Pipeline de automação executado com sucesso no Hugging Face._\n\n"
-        f"🔥 *Total de IPs Únicos Isolados:* `{total_ips}`\n\n"
-        "*📊 Resumo da Varredura:*\n"
+        "🟢 SENTINELA SOC - THREAT INTEL v5.0\n"
+        "Pipeline de automação executado com sucesso no Hugging Face.\n\n"
+        f"🔥 Total de IPs Únicos Isolados: {total_ips}\n\n"
+        "📊 Resumo da Varredura:\n"
     )
     for log in logs_consolidacao:
         texto_mensagem += f"• {log}\n"
         
-    texto_mensagem += "\n*🚨 Amostra Crítica Triada (OSINT):*\n"
+    texto_mensagem += "\n🚨 Amostra Crítica Triada (OSINT) e Salva no Banco:\n"
     for c in alvos_criticos:
         if "erro" in c:
             continue
         emoji = "🔴" if c['score'] > 50 else "🟡"
-        texto_mensagem += f"{emoji} `{c['ip']}` ({c['score']}% abuso) | Pais: {c['pais']} | ISP: _{c['isp']}_\n"
+        texto_mensagem += f"{emoji} {c['ip']} ({c['score']}% abuso) | Pais: {c['pais']} | ISP: {c['isp']}\n"
 
     payload = {"text": texto_mensagem}
     headers = {"Content-Type": "application/json"}
@@ -71,11 +133,33 @@ def disparar_alerta_slack(logs_consolidacao, total_ips, alvos_criticos):
     try:
         resposta = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
         if resposta.status_code == 200:
-            return "📢 Alerta enviado com sucesso para o Slack!"
+            return "Alerta enviado com sucesso para o Slack!"
         else:
-            return f"❌ Slack rejeitou o envio. Status: {resposta.status_code}"
+            return f"Slack rejeitou o envio. Status: {resposta.status_code}"
     except Exception as e:
-        return f"❌ Falha de rede com a API do Slack: {str(e)}"
+        return f"Falha de rede com a API do Slack: {str(e)}"
+
+# Nova função dedicada para gerar a lista em texto puro via API externa
+def api_retornar_lista_bruta():
+    ips_totais = set()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futuros = [executor.submit(requisitar_feed, nome, url) for nome, url in FEEDS_CTI.items()]
+        for futuro in futuros:
+            nome_feed, linhas = futuro.result()
+            for linha in linhas:
+                linha = linha.strip()
+                if not linha or linha.startswith("#"):
+                    continue
+                if nome_feed == "Tor Exit Nodes (Nós de Saída)":
+                    if linha.startswith("ExitAddress"):
+                        ips_totais.add(linha.split()[1])
+                else:
+                    if not linha.isalpha() and "." in linha:
+                        ips_totais.add(linha)
+    
+    lista_final = sorted(list(ips_totais))
+    # Une os mais de 22 mil IPs pulando linha para o firewall ler como bloco de texto
+    return "\n".join(lista_final)
 
 def agregar_e_enriquecer():
     ips_totais = set()
@@ -86,7 +170,7 @@ def agregar_e_enriquecer():
         for futuro in futuros:
             nome_feed, linhas = futuro.result()
             ips_do_feed = 0
-            for linha in linhas: # Se der erro em lines anterior troque para linhas
+            for linha in linhas:
                 linha = linha.strip()
                 if not linha or linha.startswith("#"):
                     continue
@@ -106,8 +190,8 @@ def agregar_e_enriquecer():
     with ThreadPoolExecutor(max_workers=5) as executor:
         resultados_osint = list(executor.map(enriquecer_ip, ips_para_analise))
             
-    # Chamada para o motor do Slack
     status_envio = disparar_alerta_slack(logs_consolidacao, len(lista_final), resultados_osint)
+    metricas_atualizadas = obter_metricas_banco()
             
     resultado = f"--- STATUS DO DISPARO: {status_envio} ---\n\n"
     resultado += "--- STATUS DA CONSOLIDAÇÃO MULTILISTA ---\n"
@@ -128,20 +212,37 @@ def agregar_e_enriquecer():
     resultado += "📦 LISTA COMPLETA DE IPs PARA BLOCKLIST:\n"
     resultado += "\n".join(lista_final)
     
-    return resultado
+    return resultado, metricas_atualizadas
+
+inicializar_banco()
 
 theme_base = gr.themes.Default()
 
-with gr.Blocks(theme=theme_base, css="style.css", title="SEK - SOC Operations Room") as interface:
-    with gr.Row():
-        gr.Markdown("💻 **SEC Threat Intelligence System v4.0** | Console com Alerta Slack")
+# CORREÇÃO GRADIO 6: theme, css e title foram movidos para o launch()
+with gr.Blocks() as interface:
+    gr.Markdown("💻 SEC Threat Intelligence System v5.0 | Console com Persistência SQLite")
     
     with gr.Row():
         with gr.Column(scale=1, elem_classes=["cyber-box"]):
             gr.Markdown("### 🎛️ PIPELINE CORPORATIVO")
-            gr.Markdown("Execução integrada de Threat Intelligence com alerta automatizado via Slack.")
+            gr.Markdown("Execução integrada de Threat Intelligence com armazenamento local e alertas.")
             btn_disparar = gr.Button("Iniciar Pipeline", elem_classes=["neon-btn"])
-            gr.Markdown("📊 **Engine Specs:**\n* ThreadPool: Active\n* Slack Hook: Connected\n* Auto-Dedup: Enabled")
+            
+            gr.Markdown("---")
+            gr.Markdown("### 📈 MÉTRICAS DO BANCO")
+            output_banco = gr.Textbox(
+                label="Estatísticas Acumuladas",
+                value=obter_metricas_banco(),
+                lines=5,
+                interactive=False
+            )
+            
+            gr.Markdown("---")
+            gr.Markdown("### 📦 EXPORTAR DADOS")
+            btn_baixar_db = gr.Button("Gerar Arquivo do Banco", size="sm")
+            componente_download = gr.File(label="Download do Banco SQLite", interactive=False)
+            
+            gr.Markdown("📊 Engine Specs:\n* ThreadPool: Active\n* SQLite3: Connected\n* Slack Hook: Connected\n* API Endpoint: Ready")
             
         with gr.Column(scale=2):
             output_log = gr.Textbox(
@@ -151,7 +252,22 @@ with gr.Blocks(theme=theme_base, css="style.css", title="SEK - SOC Operations Ro
                 elem_classes=["terminal-console"]
             )
             
-    btn_disparar.click(fn=agregar_e_enriquecer, inputs=None, outputs=output_log)
+    btn_disparar.click(
+        fn=agregar_e_enriquecer, 
+        inputs=None, 
+        outputs=[output_log, output_banco]
+    )
+    
+    btn_baixar_db.click(
+        fn=lambda: DB_FILE if os.path.exists(DB_FILE) else None,
+        inputs=None,
+        outputs=componente_download
+    )
 
 if __name__ == "__main__":
-    interface.launch()
+    interface.queue()
+    # Removido o show_api que estava quebrando o contêiner
+    interface.launch(
+        theme=theme_base,
+        css="style.css"
+    )
